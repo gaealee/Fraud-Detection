@@ -1,0 +1,410 @@
+---
+title: "HW6_yl4131_YuanyuanLi"
+output: html_document
+---
+
+## Exploratory Data Analysis
+
+```{r}
+#load libraries
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(data.table)
+library(zipcode)
+suppressPackageStartupMessages(library(tidyverse))
+library(stringr)
+library(ggthemes)
+suppressPackageStartupMessages(library(maps))
+library(RColorBrewer)
+library(cluster)
+library(factoextra)
+library(LPCM)
+library(meanShiftR)
+```
+
+```{r}
+setwd("~/Desktop/L/Anomaly Detection/session 4/HW4")
+payment <- read.csv("inpatientCharges.csv")
+
+
+data(zipcode)
+nrow(zipcode)
+# get the basic info of the dataset
+payment <-payment %>% arrange(Provider.Id, DRG.Definition) 
+head(payment)
+str(payment)
+
+```
+
+```{r}
+# convert the average to numeric
+p1 <- strsplit(x = as.character(payment$Average.Covered.Charges),split = "$",fixed = T)
+payment$Average.Covered.Charges <- as.numeric(sapply(p1, '[[',2))
+p1 <- strsplit(x = as.character(payment$Average.Medicare.Payments),split = "$",fixed = T)
+payment$Average.Medicare.Payments <- as.numeric(sapply(p1, '[[',2))
+p1 <- strsplit(x = as.character(payment$Average.Total.Payments),split = "$",fixed = T)
+payment$Average.Total.Payments <- as.numeric(sapply(p1, '[[',2))
+
+colnames(payment)
+anyNA(payment)
+```
+
+
+## Feature Engineering (improvement of previous features)
+
+- Lead
+    - According the dataset and information from website, DRG's full name is diagnosis-realted group, and is a patient classification system that standardizes prospective payment to hospital. (sources:https://hmsa.com/portal/provider/zav_pel.fh.DIA.650.htm)
+    - Hospital referral regions (HRRs) represent regional health care market for tertiary medical care that generally requires the services of a major referral center. (sources: http://archive.dartmouthatlas.org/data/region/  )
+    - To identify the frauds, we should at least narrow down our dataset and ensure that we the comparisons are conducted under the same DRG definition with the relatively same oevrall situation, where we can use state or city to group all the providers.
+- Analysis
+    - Use DRG definition and Hospital.Referral.Region.Description to divide the whole dataset
+    - Get the mean and median values of each city's total discharges, average covered charges, average total payments, and average medicare payments by each DRG definition within the same Hospital Referral Region.
+    - Append the average and median statistics back to the data to derive the ratios and also add insurance covered ratio and discharge's average covered charges to the new dataset
+    
+- R code: Attached below
+
+```{r}
+DRG_Referral_median <- payment %>%
+  group_by(DRG.Definition, Hospital.Referral.Region.Description)%>%
+  summarise(median_total_discharges = median(Total.Discharges),
+            median_average_covered_charges = median(Average.Covered.Charges),
+            median_average_total_payments = median(Average.Total.Payments),
+            median_average_medicare_payments = median(Average.Medicare.Payments),
+            median_avg_covered_discharge = median(Average.Covered.Charges/Total.Discharges),
+            median_avg_cover_total = median(Average.Covered.Charges/Average.Total.Payments),
+            median_avg_total_discharge = median(Average.Total.Payments/Total.Discharges),
+            median_avg_medicare_discharge = median(Average.Medicare.Payments/Total.Discharges),
+            median_count_trans = n())
+head(DRG_Referral_median)
+```
+
+```{r}
+# get ratios based on the DRG_Referral_median dataframe
+ratios <- payment %>% 
+       left_join(DRG_Referral_median, by=c("DRG.Definition","Hospital.Referral.Region.Description")) %>%
+       mutate( 
+            ratio_total_discharges          = Total.Discharges/median_total_discharges,
+            ratio_median_covered_charges   = Average.Covered.Charges/median_average_covered_charges,
+            ratio_median_total_payments    = Average.Total.Payments/median_average_total_payments,
+            ratio_median_medicare_payments = Average.Medicare.Payments/median_average_medicare_payments,
+            ratio_diff_insurance_covered = Average.Medicare.Payments/Average.Total.Payments - median_average_medicare_payments / median_average_total_payments,
+            ratio_median_covered_discharge = (Average.Covered.Charges/Total.Discharges)/ median_avg_covered_discharge,
+            ratio_median_totalpay_discharge = (Average.Total.Payments/Total.Discharges)/ median_avg_total_discharge,
+            ratio_median_medicare_discharge = (Average.Medicare.Payments/Total.Discharges)/ median_avg_medicare_discharge,
+            ratio_diff_median_total_payments = (Average.Covered.Charges/Average.Total.Payments) -(median_avg_cover_total/ median_average_total_payments)) %>%
+       select(-median_total_discharges,
+              - median_average_covered_charges,
+              - median_average_total_payments,
+              - median_average_medicare_payments,
+              - median_avg_covered_discharge,
+              - median_avg_cover_total,
+              -  median_avg_total_discharge,
+              - median_avg_medicare_discharge,
+              - median_count_trans,
+              -Total.Discharges,
+              -Average.Covered.Charges,
+              -Average.Total.Payments,
+              -Average.Medicare.Payments
+           ) %>% arrange(Provider.Id, DRG.Definition) 
+#%>%
+#           select(Provider.Id,DRG.Definition,Provider.Name,Provider.State,ratio_total_discharges,ratio_average_covered_charges,ratio_average_total_payments,ratio_average_medicare_payments)
+    
+head(ratios)
+
+```
+
+
+- Conclusion
+    - Rather than use DRG defination and State to group the providers, I use hospitla referral regions to divide the whole dataset. That is, to ensure the fraud detection is under the same DRG definition and the same hospital referral regions. The main reason to use hospital referral regions is even though I narrow down the dataset to each state, different cities have different infrastructure levels and economic conditions. Even in the same city, areas in suburban and urban might have differenet conditions.     - Besides, my previous analysis is based on the average level compared to the overall level of cases. In this HW, I will use median value instead. Because if I use the mean value, it may be affecetd by the abnormal values while median value will be more objective.
+    - Finally, I add three more features in my feature engineering process, including the ratio of each provider's total payment per discharge to the median level under the benchmark of DRG definition and hospital referral regions, the ratio of each provider's medicare payment per discharge to the median level under the benchmark of DRG definition and hospital referral regions, and the difference between the ratio of each provider's average covered charges to average total payments and the median ratio under the benchmark of DRG definition and hospital referral regions.
+
+## standardization
+
+- Lead
+    - It is important to standardize variables to ensure they receive the same weight in analysis
+    - Approaches such as Z-score can help us to standardize
+- Analysis
+    - In this part, I will just use the function scale to standardize the data
+- R code: Attached bellow
+
+```{r}
+# select variables
+data<- ratios[,9:17]
+
+#scale the data
+data <- scale(data)
+head(data)
+data2 <- data
+rownames(data2) <- ratios$Provider.Name
+```
+
+- Conclusion
+    - As shown above, I have standardized the data and it can be used for further analysis.
+    
+## Variable Selection (Before clustering)
+
+- Lead
+    - Before clustering, we need to examine the if it is necessary to conduct factor analysis. 
+    - Variables with high correlations will have a great impact on the clustering result and 
+    - The function pairs.panels in the psych package can examine the correlation between each variable
+    - Bartlett’s Test of Sphericity is to see if there are at least some non-zero correlations by comparing correlation matrix to an identity matrix. A significant test indicates suitability for factor analysis.
+    - KMO Measure of Sampling Adequacy compares partial correlation matrix to pairwise correlation matrix. A partial correlation is a correlation after partialing out all other correlations. If the variables are strongly related, partial correlations should be small and MSA close to 1. If MSA > 0.5, data is suitable for factor analysis.
+    
+- Analysis
+    - Use function pairs.panels to get the plot of correlations between each variables
+    - Find out if there are variables have correlations larger than 0.5
+    - Use cortest.bartlett function and check the significance
+    - Use KMO function and check out MSA for each variable
+  
+- R code: Attached below
+
+```{r}
+# examine the correlations of the variables
+library(psych)
+pairs.panels(data)
+
+# Bartlett’s Test of Sphericity
+library(psych)
+cortest.bartlett(cor(data),n = 30)
+
+# KMO Measure of Sampling Adequacy (MSA)
+
+KMO(r = cor(data))
+```
+
+- Conclusion
+    - As we can see, some variables have high correlations with each other. For example, the correlation between ratio_average_total_payments and ratio_average_medicare_payments is 0.9, which is larger than 0.5. So, before conducting kmeans clustering, we need to solve the provblem of high correlations. As for the Bartlett’s Test of Sphericity, the p value is less than 0.05, which means it is significant. Meanwhile, the  result of KMO Measure of Sampling Adequacy also shows we need to solve the problem of high correlations.
+
+## Approaches to solve the problem (use PCA in this HW)
+
+- Lead
+    - To solve the problems listed above, there are several approaches, including variable elimination, factor analysis, variable index, and use a different distance measure.
+    - The simplest approach for dealing with this situation, if the correlations are very high (e.g., .80 or higher), is to eliminate one of the two variables from the analysis. The variable to be retained in the analysis should be selected based on its practical usefulness or actionability potential.
+    - Use mahalanobis distance to cluster will eliminate the effect of  high correlations
+- Analysis
+    - First, I try to calculate mahalanobis distance and then use the hclust fucntion to cluster
+    - However, this method doesn't work in this assignment. Because calculation of the Mahalanobis distance measure, especially when there are more than a few variables can be a complicated, time consuming, iterative procedure.So, I choose the simpliest approach, just eliminate one of the variable, that is, ratio_average_medicare_payments.
+
+sources: Cluster Analysis Gets Complicated: https://www.trchome.com/docs/5-cluster-analysis-gets-complicated/file
+
+- R code: Attached below
+```{r}
+# calculate mahalanobis distance
+library(ClusterR)
+mean <- colMeans(data)
+sx<-cov(data)
+d = mahalanobis(data, mean,sx) 
+
+### failed to use the mahalanobis in the hclust function
+
+# eliminate the variable ratio_average_medicare_payments.
+data1 <- ratios[,c(9,10,11,13,15,17)]
+data1 <-scale(data1)
+data1 <- as.data.frame(data1)
+
+
+# use PCA to solve the problem of high correaltions
+
+data.pca <- prcomp(data2,center = TRUE, scale. = TRUE)
+print(data.pca)
+summary(data.pca)
+
+# plot method
+fviz_eig(data.pca, addlabels = TRUE)
+
+# choose the first five components
+pca <- data.pca$x[,1:5]
+head(pca)
+```
+
+- Conclusion
+    - I try to use mahalanobis distance to cluster but failed by the high volume of calculation. And I just eliminate the varaible ratio_median_medicare_payments, ratio_median_covered_discharge, and ratio_median_medicare_discharge since the correlation among these variables are very large. If we remain these variables to further cluster, it may cause some problems.
+    - I offer two approaches here to solve the problem of high correlation, one is directly eliminate some variables with high correlations, the other is use PCA to reduce dimensions. In the previous homework, I use the first approach and in this homework, I will try to use the second, PCA.
+    - As we can see, the first five components account for 93.49% the variability in the dataset. So, in the following analysis, I will use the first five componenets.
+
+## DBSCAN
+- Lead
+    - DBSCAN is a density-based  clustering non-parametric algorithm: given a set of points in some space, it groups together points that are closely packed together (points with many nearby neighbors), marking as outliers points that lie alone in low-density regions (whose nearest neighbors are too far away)
+    - It is in the DBSCAN library and can be used to identify outlier. Basically, this method calculate the distance between points and look for points which are far away from others.
+    - Two parameters need to be set, eps and MinPoints. Specifically, eps specifies a distance threshold under which two points are considered to be close; while MinPoints is the minimum number of points that have to be within a point's eps before the point can start agglomerating.
+
+(sources: https://www.datadoghq.com/blog/outlier-detection-algorithms-at-datadog/)
+(sources: https://en.wikipedia.org/wiki/DBSCAN)
+
+- Analysis
+    - Ramdomly choose 10000 rows in the PCA dataset as the sample dataset
+    - Use kNNdistplot to find the optimal eps value
+    - Use dbscan function to cluster the sample dataset
+    - Combine the cluster result with the original dataset sample and calculate the average statistics to determine the outlier
+- R code: Attached below
+
+```{r}
+# randomly select 10000 rows of the pca dataframe
+set.seed(1)
+sample <- pca[sample(nrow(pca),10000),]
+aaa <- rownames(sample)
+aa <-data.frame(Provider.Name = rownames(sample)) 
+# find the suitable eps
+library(dbscan)
+kNNdistplot(sample, k = 4)
+abline(h = 1.8, lty = 2)
+
+# compute DBSCAN 
+set.seed(123)
+db<- fpc::dbscan(sample,eps = 1.8, MinPts = 5)
+table(db$cluster)
+
+#remove the rownames of sample 
+sample0 <- sample
+rownames(sample0)<- NULL
+# plot the DBSCAN clusters
+fviz_cluster(db,sample0,stand = FALSE, geom = "point", ellipse.type = "norm")
+
+previous <- as.data.frame(sample)
+previous$cluster <- db$cluster
+
+mean_previous<- previous %>%
+  group_by(cluster)%>%
+  summarize(count = n(),
+            mean_pc1 = mean(PC1),
+            mean_pc2 = mean(PC2),
+            mean_pc3 = mean(PC3),
+            mean_pc4 = mean(PC4),
+            mean_pc5 = mean(PC5))
+mean_previous
+
+# combine the cluster with the provider name
+result <-table(aaa, db$cluster)
+frame <- as.data.frame(result)
+
+# filter the outliers 
+a1<-frame[frame$Var2==0,]
+a1<- a1[a1$Freq>0,]
+head(a1)
+
+```
+
+- Conclusion
+    - Because using the whole dataset requires high computer power, I randomly choose 10000 rows as my sample data. Use kNNdistplot to find the optimal eps and in my sample data, the optimal eps is 1.8.
+    - Cluster 0 represent the black points in the cluster plot combined with the cluster 2 are the outlers. And the first evidence is the size of these clusters are small. Besides, as we can see the table above, the average statistics of cluster 0 and cluster 2 are much larger than cluster 1. As a result, these two can be identified as outlier.
+    - Combined the cluster with the provider name, we can get which providers might have waste and abuse phenomenon and I list the first 6 rows of problematic providers.
+
+## Meanshift
+- Lead
+    - Mean shift is a hill climbing algorithm which involves shifting this kernel iteratively to a higher density region until convergence. Every shift is defined by a mean shift vector. The mean shift vector always points toward the direction of the maximum increase in the density. At every iteration the kernel is shifted to the centroid or the mean of the points within it.
+    - Use mean shift we can cluster the dataset to find out outliers, and we can use meanShiftR to conduct the analysis
+    - Compare to the LPCM package, meanShiftR has a quick speed.  
+
+- Analysis
+    - Still use the previous sample data to conduct meanshift analysis
+    - The parameter epsilonCluster is a scalar used to determine the minimum distance between distinct clusters. This distance is applied after all iterations have finished and in order of the rows of queryData. Here, I will try a small number with a large number and then try to get the appropriate number
+    - Get the table of clusters, combine it with the previous dataset sample and calculate each components' average statistics.
+    - Combined cluster with provider name and to see the problematic providers.
+
+- R code: Attached below
+
+```{r}
+#use meanShift function to cluster
+cluster1 <- meanShift(sample,trainData = sample, nNeighbors = NROW(sample), algorithm = "LINEAR", kernelType = "NORMAL", bandwidth = rep(1, NCOL(sample)), alpha = 0, iterations = 10, epsilon = 1e-05, epsilonCluster = 0.5, parameters = NULL)
+
+cluster2 <- meanShift(sample,trainData = sample, nNeighbors = NROW(sample), algorithm = "LINEAR", kernelType = "NORMAL", bandwidth = rep(1, NCOL(sample)), alpha = 0, iterations = 10, epsilon = 1e-05, epsilonCluster = 50, parameters = NULL)
+
+table(cluster1$assignment)
+table(cluster2$assignment)
+
+# combine the cluster with the provider name
+result2 <-table(aaa, cluster2$assignment)
+frame2 <- as.data.frame(result2)
+
+original <- as.data.frame(sample)
+original$cluster <- cluster2$assignment
+
+mean_original<- original %>%
+  group_by(cluster)%>%
+  summarize(count = n(),
+            mean_pc1 = mean(PC1),
+            mean_pc2 = mean(PC2),
+            mean_pc3 = mean(PC3),
+            mean_pc4 = mean(PC4),
+            mean_pc5 = mean(PC5))
+
+mean_original
+
+# find out the each provider in outliers 
+a2<-frame2[frame2$Var2==2,]
+a2<- a2[a2$Freq>0,]
+head(a2)
+
+```
+
+- Conclusion
+    - After several tarils, I choose the parameter in cluster 2 as my optimal one and it divided the sample data into 2 clusters. The size of cluster 2 is small and the average values of this cluster are much larger than the other. As a result, we can determine cluster 2 is the outlier.
+
+## kmeans clustering
+- Lead
+    - Attempts to find groups that are most compact, in terms of the mean sum-of-squares deviation of each observation from the multivariate center (centroid) of its assigned group
+    - Non-hierarchical process that reaches solution through an iteration
+    - K-means clustering begins by arbitrarily placing centroids in the data and then iterating from that point to the final solution. This disorganized approach to clustering produces similar quality of clusters to hierarchical clustering but much faster
+    
+- Analysis
+    - Use the previous sample data.
+    - Compute total within sum of squares for a number of values of k. Plot a line graph of k (on x-axis) against total within sum of squares (on y-axis). Ideal number of clusters is inferred from a sudden change in the line graph or what is commonly known as the “elbow”.
+    - Silhouette analysis reflects how well points fit in their respective clusters. It involves computing the silhouette width(s(i)) for each points: (i) = (b(i) - a(i))/max{a(i),b(i)} where
+        - a(i) is average distance of a point to all observations within its cluster
+        - b(i) is the average distance of a point to all observations in the nearest cluster
+- R code: Attached below
+
+```{r}
+#choose the best k
+set.seed(1234)
+within_ss = sapply(4:10,FUN = function(x) kmeans(x = sample,centers = x)$tot.withinss)
+ggplot(data=data.frame(cluster = 4:10,within_ss),aes(x=cluster,y=within_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(4,10,1))
+set.seed(1234)
+ratio_ss = sapply(4:10,FUN = function(x) {km = kmeans(x = sample,centers = x)
+km$betweenss/km$totss} )
+ggplot(data=data.frame(cluster = 4:10,ratio_ss),aes(x=cluster,y=ratio_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(4,10,1))
+```
+
+- Conclusion
+    - Based on the warnings and two plots, the optimal number of cluster might be 5 or 8 and I will use these two to further analyze.
+
+```{r}
+# use the number of 5
+set.seed(1234)
+km = kmeans(sample,centers  = 5)
+km$size;km$centers
+
+# use the number of 8
+set.seed(1234)
+km1 = kmeans(sample,centers  = 8)
+km1$size;km1$centers
+```
+
+- Conclusion
+    - Based on the result with 5 clusters and 8 clusters, I will choose 8 cluster. To begin with, with the number of 5, the size of each cluster is quite large compared to the sample dataset. It is unreasonable to idenfy such some many providers as the suspicious one. Besides, the difference of cluster centroid among each clusters are more obvious in centers=8 clusters. Thus, I choose 8 for clustering.
+    - As we can see above, cluster 3 is the smallest cluster with the size of 169 providers. Besides, based on the values of cluster means which also called cluster centroid, cluster 3 might be suspicious for waste and abuse because its values are much higher than other clusters.
+
+
+## Compare the outlier size of three approaches 
+
+- Lead
+    - DBSCAN, Meanshift and K-means are three clustering approaches. We can compare the result of these three methods and examine if the results are consistent.
+
+- Analysis
+    - Compare the size of the outliers we have identified correspongding to three methods.
+
+- R code: Attached below
+```{r}
+comparison <- data.frame("DBSCAN" = c(109, 0.0109), "MeanShift" = c(112, 0.0112),"K-means" = c(169, 0.0169))
+comparison
+```
+
+- Conclusion
+    - In my sample dataset, DBSCAN and Meanshift identified the similar size of outliers while the outlier of K-means's size is a little larger than these two. Overall, the results of these three approaches are consistent.
