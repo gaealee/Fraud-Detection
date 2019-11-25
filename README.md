@@ -5,5 +5,6 @@ Anomaly detection projects
 - Healthcare Fraud Detection
     - PyOD: KNN & Isolated Forest 
     - R: DBSCAN & MeanShift & K-means
-- Loan Default (Random Forest & GBM)
-- Loan Default (GLM& AUtoML) (WOE binning)
+- Loan Default 
+    - Random Forest & GBM
+    - GLM& AUtoML (WOE binning)
