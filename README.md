@@ -8,3 +8,4 @@ Anomaly detection projects
 - Loan Default 
     - Random Forest & GBM
     - GLM& AUtoML (WOE binning)
+    - SHAP (WOE binning - difference: for numerical variables, only binning variables with negative values, including -99, -98, etc.) 
